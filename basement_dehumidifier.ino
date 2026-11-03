@@ -1,12 +1,15 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <DHT.h>
-#include <secrets.h>
+#include "secrets.h"
+#include "AdafruitIO_WiFi.h"
  
 // ---- Fill these in with your info, or create and include a secrets.h file like I did ----
 //const char* WIFI_SSID     = "YOUR_WIFI_NAME";
 //const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 //const char* NTFY_TOPIC    = "YOUR_RANDOM_TOPIC_NAME";
+//const char* AIO_USER      = "ADAFRUIT_AIO_USERNAME";
+//const char* AIO_KEY       = "ADAFRUIT_AIO_KEY";
  
 // ---- Pins ----
 #define DHT_PIN   4
@@ -14,16 +17,21 @@
 #define LDR_PIN   34   // ADC1 pin -- do not use an ADC2 pin, WiFi breaks those readings
  
 // ---- Tunables (calibrate these once the hardware is running) ----
-const float HUMIDITY_ALARM_SETPOINT = 70.0;  // % RH -- fire alert above this
-const float HUMIDITY_RESET_SETPOINT = 65.0;  // % RH -- must drop below this to re-arm
+const float HUMIDITY_ALARM_SETPOINT = 45.0;  // % RH -- fire alert above this
+const float HUMIDITY_RESET_SETPOINT = 40.0;  // % RH -- must drop below this to re-arm
+// The humidity set points largely depend on season and the room. Future functionality could detect seasonal changes and change the set points accordingly.
 const int   HUMIDITY_DEBOUNCE_COUNT = 10;    // consecutive high readings required
 const unsigned long READ_INTERVAL_MS = 30000; // 30s between DHT22 reads
+const unsigned long AIO_TIMEOUT_MS = 20000; // 20s connection attempt to AdaFruit dashboard
  
 int   LDR_TANK_FULL_THRESHOLD = 2310; // Midpoint between no tank full LED (~570) and tank full LED on (~4053)
 const int LDR_DEBOUNCE_COUNT = 3;     // consecutive high readings required
  
 DHT dht(DHT_PIN, DHT_TYPE);
- 
+AdafruitIO_WiFi io(AIO_USER, AIO_KEY, WIFI_SSID, WIFI_PASSWORD);
+AdafruitIO_Feed *humidityFeed = io.feed("humidity");
+AdafruitIO_Feed *ldrFeed = io.feed("ldr-reading");
+
 // ---- State ----
 int  humidityHighStreak = 0;
 bool humidityAlarmActive = false;
@@ -52,6 +60,19 @@ void sendNtfy(const String& title, const String& message, const String& tags) {
   int code = http.POST(message);
   Serial.printf("ntfy POST -> HTTP %d\n", code);
   http.end();
+}
+
+// Connects to AdaFruit IO to track humidity trends.
+void connectAIO() {
+  io.connect();
+  Serial.print("Connecting to AdaFruit IO");
+  unsigned long start = millis();
+  while (io.status() < AIO_CONNECTED && millis() - start < AIO_TIMEOUT_MS) {
+    delay(500);
+    Serial.print(".");
+  }
+  if (io.status() >= AIO_CONNECTED) Serial.println("\nConnected to AdaFruit IO"); 
+  else Serial.println(String("\n") + io.statusText()); 
 }
  
 void checkHumidity(float humidity) {
@@ -101,10 +122,14 @@ void checkTankFull(int ldrValue) {
 void setup() {
   Serial.begin(115200);
   dht.begin();
+  delay(3000); //Allows initial printing of WiFi connection status text for debugging.
   connectWiFi();
+  connectAIO();
 }
  
 void loop() {
+  io.run();
+  
   if (millis() - lastReadMs < READ_INTERVAL_MS) return;
   lastReadMs = millis();
  
@@ -115,4 +140,7 @@ void loop() {
  
   checkHumidity(humidity);
   checkTankFull(ldrValue);
+
+  if (!isnan(humidity)) humidityFeed->save(humidity);
+  ldrFeed->save(ldrValue);
 }
